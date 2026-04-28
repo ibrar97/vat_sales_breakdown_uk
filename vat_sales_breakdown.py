@@ -121,7 +121,7 @@ def map_vat_category(label: str) -> str:
 with st.sidebar:
     st.image("https://upload.wikimedia.org/wikipedia/commons/a/a9/Amazon_logo.svg", width=120)
     st.markdown("---")
-    st.markdown("### 🔗 Google Sheet Config")
+    st.markdown("### 🔗 Google Sheet URL")
 
     st.markdown('<div class="tip-box">Share your sheet with <b>Anyone with the link → Viewer</b> before pasting the URL.</div>', unsafe_allow_html=True)
 
@@ -130,33 +130,13 @@ with st.sidebar:
         placeholder="https://docs.google.com/spreadsheets/d/…",
         help="Paste the full URL from your browser address bar.",
     )
-    tab_name = st.text_input(
-        "Tab / Sub-sheet name",
-        placeholder="e.g.  VAT Catalogue",
-        help="Exact name of the tab that contains your ASIN list.",
-    )
-    asin_col = st.text_input(
-        "ASIN column header",
-        value="ASIN",
-        help="Column name in YOUR sheet that contains ASINs.",
-    )
-    vat_col = st.text_input(
-        "VAT type column header",
-        value="VAT Rate",
-        help="Column name that says whether the item is 20 / 5 / 0%.",
-    )
 
-    st.markdown("---")
-    st.markdown("### 💰 Sales Value Column")
-    st.markdown('<div class="tip-box">Which column in the Amazon report contains the £ value? (e.g. <b>Ordered Product Sales</b>)</div>', unsafe_allow_html=True)
-    sales_col = st.text_input(
-        "Sales £ column (Amazon report)",
-        value="Ordered Product Sales",
-    )
-    asin_col_amazon = st.text_input(
-        "ASIN column (Amazon report)",
-        value="(Child) ASIN",
-    )
+    # ── Static config (same for all team members) ────────────────────────────
+    tab_name        = "Profit Calculator - VAT 20%"
+    asin_col        = "ASIN"
+    vat_col         = "VAT Code"
+    sales_col       = "Ordered Product Sales"
+    asin_col_amazon = "(Child) ASIN"
 
     st.markdown("---")
     st.markdown("### ℹ️ About")
@@ -350,26 +330,30 @@ if uploaded_files and vat_map and sales_col and asin_col_amazon:
 
             # ── Trend chart (% of sales) ──────────────────────────────────────
             COLOURS = {
-                "20% Standard": "#FF9900",
-                "5% Reduced":   "#146EB4",
-                "0% Zero Rated":"#2ECC71",
-                "Unknown":      "#adb5bd",
-                "Unmatched":    "#e74c3c",
+                "20% Standard": (255, 153,   0),
+                "5% Reduced":   ( 20, 110, 180),
+                "0% Zero Rated":( 46, 204, 113),
+                "Unknown":      (173, 181, 189),
+                "Unmatched":    (231,  76,  60),
             }
+
+            def hex_colour(rgb): return "#{:02X}{:02X}{:02X}".format(*rgb)
+            def rgba_colour(rgb, a=0.13): return "rgba({},{},{},{})".format(*rgb, a)
 
             fig = go.Figure()
             for cat in pivot_pct.columns:
                 if cat in ("Unmatched",):
                     continue
+                rgb = COLOURS.get(cat, (136, 136, 136))
                 fig.add_trace(go.Scatter(
                     x=list(pivot_pct.index),
                     y=pivot_pct[cat].round(2),
                     mode="lines+markers",
                     name=cat,
-                    line=dict(color=COLOURS.get(cat, "#888"), width=3),
+                    line=dict(color=hex_colour(rgb), width=3),
                     marker=dict(size=8, line=dict(width=2, color="white")),
                     fill="tonexty" if cat != pivot_pct.columns[0] else "tozeroy",
-                    fillcolor=COLOURS.get(cat, "#888") + "22",
+                    fillcolor=rgba_colour(rgb),
                     hovertemplate=f"<b>{cat}</b><br>Month: %{{x}}<br>Share: %{{y:.1f}}%<extra></extra>",
                 ))
 
@@ -391,11 +375,12 @@ if uploaded_files and vat_map and sales_col and asin_col_amazon:
             for cat in pivot.columns:
                 if cat in ("Unmatched",):
                     continue
+                rgb2 = COLOURS.get(cat, (136, 136, 136))
                 fig2.add_trace(go.Bar(
                     x=list(pivot.index),
                     y=pivot[cat].round(2),
                     name=cat,
-                    marker_color=COLOURS.get(cat, "#888"),
+                    marker_color=hex_colour(rgb2),
                     hovertemplate=f"<b>{cat}</b><br>Month: %{{x}}<br>Sales: £%{{y:,.0f}}<extra></extra>",
                 ))
 
