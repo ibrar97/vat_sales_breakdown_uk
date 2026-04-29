@@ -206,14 +206,10 @@ if uploaded_files:
 
 st.divider()
 
-# ── Step 3: Generate ─────────────────────────────────────────────────────────
-ready = bool(uploaded_files and vat_map)
-run   = st.button("Generate Trends", type="primary", disabled=not ready)
+# ── Step 3: Auto-generate when files + sheet are ready ───────────────────────
 
-if not ready and uploaded_files and not vat_map:
-    st.caption("Connect your Google Sheet in the sidebar to enable this button.")
 
-if run and ready:
+if uploaded_files and vat_map:
     results       = []
     unmatched_log = []
     progress      = st.progress(0, text="Processing…")
