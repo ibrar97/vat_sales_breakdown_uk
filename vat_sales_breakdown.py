@@ -69,15 +69,16 @@ def extract_sheet_id(url: str) -> str | None:
     return m.group(1) if m else None
 
 # ─── Helper: Load Google Sheet tab as DataFrame ──────────────────────────────────
-def load_gsheet(sheet_id: str, tab_name: str) -> pd.DataFrame | None:
+def load_gsheet(sheet_id: str, tab_name: str, header_row: int = 2) -> pd.DataFrame | None:
+    # Use export CSV endpoint so we can control the header row (header_row is 0-indexed)
     url = (
         f"https://docs.google.com/spreadsheets/d/{sheet_id}"
-        f"/gviz/tq?tqx=out:csv&sheet={requests.utils.quote(tab_name)}"
+        f"/export?format=csv&sheet={requests.utils.quote(tab_name)}"
     )
     try:
         r = requests.get(url, timeout=15)
         r.raise_for_status()
-        df = pd.read_csv(io.StringIO(r.text))
+        df = pd.read_csv(io.StringIO(r.text), header=header_row)
         # Drop fully-empty columns/rows that Sheets sometimes exports
         df = df.dropna(how="all", axis=1).dropna(how="all", axis=0)
         df.columns = df.columns.str.strip()
@@ -107,11 +108,11 @@ def norm_asin(series: pd.Series) -> pd.Series:
 # ─── Helper: Map VAT label to category ──────────────────────────────────────────
 def map_vat_category(label: str) -> str:
     l = str(label).strip().lower()
-    if any(x in l for x in ["20", "standard", "std", "s"]):
+    if any(x in l for x in ["standard", "20"]):
         return "20% Standard"
-    if any(x in l for x in ["5", "reduced", "r"]):
+    if any(x in l for x in ["reduced", "5%", "5 %"]):
         return "5% Reduced"
-    if any(x in l for x in ["0", "zero", "exempt", "z", "free"]):
+    if any(x in l for x in ["zero", "0%", "0 %", "exempt", "free"]):
         return "0% Zero Rated"
     return "Unknown"
 
@@ -132,7 +133,7 @@ with st.sidebar:
     )
 
     # ── Static config (same for all team members) ────────────────────────────
-    tab_name        = "Profit Calculator - VAT 20%"
+    tab_name        = "🧲 Profit Calculator - VAT 20%"
     asin_col        = "ASIN"
     vat_col         = "VAT Code"
     sales_col       = "Ordered Product Sales"
