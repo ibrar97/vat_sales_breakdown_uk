@@ -4,9 +4,9 @@ import plotly.graph_objects as go
 import requests
 import io
 import re
+import json
 from datetime import datetime
 
-# ── Page config ──────────────────────────────────────────────────────────────
 st.set_page_config(
     page_title="VAT Sales Trends",
     page_icon="📊",
@@ -14,78 +14,12 @@ st.set_page_config(
     initial_sidebar_state="expanded",
 )
 
-# ── Material Design – plain white, no colours ─────────────────────────────────
-st.markdown("""
-<style>
-    html, body, [class*="css"] { font-family: 'Roboto', 'Segoe UI', sans-serif; }
-    .stApp { background: #ffffff; }
-
-    [data-testid="stSidebar"] {
-        background: #fafafa;
-        border-right: 1px solid #e0e0e0;
-    }
-    [data-testid="stSidebar"] * { color: #212121 !important; }
-
-    .block-container { padding-top: 2rem; padding-bottom: 2rem; }
-
-    .page-title {
-        font-size: 22px;
-        font-weight: 500;
-        color: #212121;
-        letter-spacing: 0.01em;
-        margin-bottom: 4px;
-    }
-    .page-subtitle {
-        font-size: 13px;
-        color: #757575;
-        margin-bottom: 24px;
-    }
-    .md-divider {
-        border: none;
-        border-top: 1px solid #e0e0e0;
-        margin: 20px 0;
-    }
-    .md-card {
-        background: #ffffff;
-        border: 1px solid #e0e0e0;
-        border-radius: 4px;
-        padding: 20px 24px;
-        margin-bottom: 8px;
-    }
-    .md-card-label {
-        font-size: 11px;
-        font-weight: 500;
-        color: #757575;
-        text-transform: uppercase;
-        letter-spacing: 0.08em;
-        margin-bottom: 8px;
-    }
-    .md-card-value {
-        font-size: 32px;
-        font-weight: 300;
-        color: #212121;
-        line-height: 1;
-    }
-    .md-info {
-        background: #fafafa;
-        border: 1px solid #e0e0e0;
-        border-radius: 4px;
-        padding: 12px 16px;
-        font-size: 13px;
-        color: #616161;
-        margin-bottom: 12px;
-    }
-    .section-label {
-        font-size: 11px;
-        font-weight: 500;
-        text-transform: uppercase;
-        letter-spacing: 0.1em;
-        color: #9e9e9e;
-        margin-bottom: 8px;
-        margin-top: 20px;
-    }
-</style>
-""", unsafe_allow_html=True)
+# ── Static column names ───────────────────────────────────────────────────────
+ASIN_COL_SHEET   = "ASIN"
+VAT_COL_SHEET    = "VAT Code"
+ASIN_COL_AMAZON  = "(Child) ASIN"
+SALES_COL_AMAZON = "Ordered Product Sales"
+SHEET_HEADER_ROW = 2   # 0-indexed → row 3 in the spreadsheet
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -95,30 +29,49 @@ def extract_sheet_id(url: str):
 
 
 def get_sheet_tabs(sheet_id: str):
-    """Fetch all tab names via the Google Sheets JSON feed."""
-    feed_url = f"https://docs.google.com/spreadsheets/d/{sheet_id}/feed/worksheets?alt=json"
+    """
+    Fetch all tab names using the gviz/tq JSON endpoint.
+    Works with 'Anyone with the link' sharing — no login required.
+    """
+    url = f"https://docs.google.com/spreadsheets/d/{sheet_id}/gviz/tq?tqx=out:json"
     try:
-        r = requests.get(feed_url, timeout=10)
-        if r.status_code == 200:
-            entries = r.json().get("feed", {}).get("entry", [])
-            return [e["title"]["$t"] for e in entries]
+        r = requests.get(url, timeout=10)
+        # gviz wraps response in  /*O_o*/  google.visualization.Query.setResponse({...});
+        text = r.text
+        # Strip the JS wrapper to get pure JSON
+        text = re.sub(r"^[^(]+\(", "", text).rstrip(");")
+        data = json.loads(text)
+        sheets = data.get("table", {})
+        # Sheet names live in the outer response under a non-standard key;
+        # fall back to parsing the raw text for "sheetNames"
+        raw_match = re.search(r'"sheetNames":\s*(\[[^\]]+\])', r.text)
+        if raw_match:
+            return json.loads(raw_match.group(1))
     except Exception:
         pass
     return []
 
 
-def load_tab_as_df(sheet_id: str, tab_name: str, header_row: int = 2):
-    """Download a tab as CSV and parse with given 0-indexed header row."""
+def load_tab_as_df(sheet_id: str, tab_name: str):
+    """
+    Load a sheet tab via gviz CSV (works with 'Anyone with the link').
+    Reads all rows with no header, then promotes row SHEET_HEADER_ROW (0-indexed) as columns.
+    """
     url = (
         f"https://docs.google.com/spreadsheets/d/{sheet_id}"
-        f"/export?format=csv&sheet={requests.utils.quote(tab_name)}"
+        f"/gviz/tq?tqx=out:csv&sheet={requests.utils.quote(tab_name)}"
     )
     try:
         r = requests.get(url, timeout=20)
         r.raise_for_status()
-        df = pd.read_csv(io.StringIO(r.text), header=header_row)
+        # Read without treating any row as header
+        df = pd.read_csv(io.StringIO(r.text), header=None, dtype=str)
+        # Use SHEET_HEADER_ROW as column names
+        df.columns = df.iloc[SHEET_HEADER_ROW].str.strip()
+        # Data rows start after the header row
+        df = df.iloc[SHEET_HEADER_ROW + 1:].reset_index(drop=True)
+        # Drop fully empty rows/columns
         df = df.dropna(how="all", axis=1).dropna(how="all", axis=0)
-        df.columns = df.columns.str.strip()
         return df
     except Exception as e:
         st.error(f"Could not load tab '{tab_name}': {e}")
@@ -153,27 +106,17 @@ def parse_amazon_report(file):
         return None
 
 
-# ── Static column names (hardcoded, same for everyone) ────────────────────────
-ASIN_COL_SHEET   = "ASIN"
-VAT_COL_SHEET    = "VAT Code"
-ASIN_COL_AMAZON  = "(Child) ASIN"
-SALES_COL_AMAZON = "Ordered Product Sales"
-SHEET_HEADER_ROW = 2       # 0-indexed → row 3 in the spreadsheet
-
-# Monochrome chart palette
-MONO = ["#212121", "#757575", "#bdbdbd", "#e0e0e0"]
-
 # ═════════════════════════════════════════════════════════════════════════════
 # SIDEBAR
 # ═════════════════════════════════════════════════════════════════════════════
 with st.sidebar:
-    st.markdown('<div class="section-label">Google Sheet</div>', unsafe_allow_html=True)
-    st.markdown(
-        '<div class="md-info">Share your sheet as <b>Anyone with the link → Viewer</b> first.</div>',
-        unsafe_allow_html=True,
-    )
+    st.title("Settings")
+    st.divider()
 
-    sheet_url  = st.text_input("Sheet URL", placeholder="https://docs.google.com/spreadsheets/d/…", label_visibility="visible")
+    st.subheader("Google Sheet")
+    st.caption("Share your sheet as **Anyone with the link → Viewer** before pasting the URL.")
+
+    sheet_url  = st.text_input("Sheet URL", placeholder="https://docs.google.com/spreadsheets/d/…")
     tab_name   = None
     sheet_id   = None
     sheet_tabs = []
@@ -186,34 +129,30 @@ with st.sidebar:
             with st.spinner("Fetching tabs…"):
                 sheet_tabs = get_sheet_tabs(sheet_id)
 
-            st.markdown('<div class="section-label">Select tab</div>', unsafe_allow_html=True)
             if sheet_tabs:
-                tab_name = st.selectbox("Tab", options=sheet_tabs, label_visibility="collapsed")
+                tab_name = st.selectbox("Select tab", options=sheet_tabs)
             else:
-                st.caption("Could not fetch tabs automatically — make sure the sheet is shared publicly.")
+                st.caption("Could not fetch tabs automatically. Type the tab name manually.")
                 tab_name = st.text_input("Tab name", placeholder="e.g. Profit Calculator - VAT 20%")
 
-    st.markdown('<hr style="border:none;border-top:1px solid #e0e0e0;margin:20px 0">', unsafe_allow_html=True)
+    st.divider()
     st.caption("Amazon UK · VAT sales trend tracker")
 
 
 # ═════════════════════════════════════════════════════════════════════════════
 # MAIN
 # ═════════════════════════════════════════════════════════════════════════════
-st.markdown('<div class="page-title">VAT Sales Trends</div>', unsafe_allow_html=True)
-st.markdown(
-    '<div class="page-subtitle">Match your Amazon UK business reports against your VAT catalogue and track 20% / 5% / 0% splits over time.</div>',
-    unsafe_allow_html=True,
-)
-st.markdown('<hr class="md-divider">', unsafe_allow_html=True)
+st.title("VAT Sales Trends")
+st.caption("Match your Amazon UK business reports against your VAT catalogue and track 20% / 5% / 0% splits over time.")
+st.divider()
 
-# ── Step 1: Load the selected sheet tab ──────────────────────────────────────
+# ── Step 1: Load Google Sheet ─────────────────────────────────────────────────
 gsheet_df = None
 vat_map   = {}
 
 if sheet_id and tab_name:
     with st.spinner(f"Loading '{tab_name}'…"):
-        gsheet_df = load_tab_as_df(sheet_id, tab_name, header_row=SHEET_HEADER_ROW)
+        gsheet_df = load_tab_as_df(sheet_id, tab_name)
 
     if gsheet_df is not None:
         missing = [c for c in [ASIN_COL_SHEET, VAT_COL_SHEET] if c not in gsheet_df.columns]
@@ -226,21 +165,18 @@ if sheet_id and tab_name:
             vat_map = {
                 norm_asin(pd.Series([r[ASIN_COL_SHEET]]))[0]: map_vat_category(r[VAT_COL_SHEET])
                 for _, r in gsheet_df.iterrows()
-                if pd.notna(r[ASIN_COL_SHEET])
+                if pd.notna(r[ASIN_COL_SHEET]) and str(r[ASIN_COL_SHEET]).strip() not in ("", "nan")
             }
-            st.success(f"Sheet loaded — {len(vat_map):,} ASINs mapped.")
+            st.success(f"Sheet loaded — **{len(vat_map):,}** ASINs mapped.")
             with st.expander("Preview mapping (first 20 rows)"):
                 st.dataframe(gsheet_df[[ASIN_COL_SHEET, VAT_COL_SHEET]].head(20), use_container_width=True)
 else:
-    st.markdown(
-        '<div class="md-info">Paste your Google Sheet URL in the sidebar to get started.</div>',
-        unsafe_allow_html=True,
-    )
+    st.info("Paste your Google Sheet URL in the sidebar to get started.")
 
-st.markdown('<hr class="md-divider">', unsafe_allow_html=True)
+st.divider()
 
 # ── Step 2: Upload Amazon reports ─────────────────────────────────────────────
-st.markdown('<div class="section-label">Monthly Amazon Business Reports</div>', unsafe_allow_html=True)
+st.subheader("Monthly Amazon Business Reports")
 st.caption("One file per month (CSV or Excel). Download from Seller Central → Reports → Business Reports → Detail Page Sales and Traffic by Child ASIN.")
 
 uploaded_files = st.file_uploader(
@@ -252,7 +188,7 @@ uploaded_files = st.file_uploader(
 
 month_labels = {}
 if uploaded_files:
-    st.markdown('<div class="section-label">Month labels</div>', unsafe_allow_html=True)
+    st.write("**Assign a month label to each file:**")
     cols = st.columns(min(len(uploaded_files), 4))
     for i, f in enumerate(uploaded_files):
         with cols[i % 4]:
@@ -263,14 +199,14 @@ if uploaded_files:
                 placeholder="e.g. Jan 2025",
             )
 
-st.markdown('<hr class="md-divider">', unsafe_allow_html=True)
+st.divider()
 
 # ── Step 3: Generate ─────────────────────────────────────────────────────────
 ready = bool(uploaded_files and vat_map)
+run   = st.button("Generate Trends", type="primary", disabled=not ready)
 
-run = st.button("Generate trends", type="primary", disabled=not ready)
 if not ready and uploaded_files and not vat_map:
-    st.caption("Connect your Google Sheet in the sidebar to enable this.")
+    st.caption("Connect your Google Sheet in the sidebar to enable this button.")
 
 if run and ready:
     results       = []
@@ -313,10 +249,10 @@ if run and ready:
     progress.empty()
 
     if not results:
-        st.error("No data could be processed. Check that the column names in your report match the expected format.")
+        st.error("No data could be processed. Check that column names match the expected format.")
         st.stop()
 
-    # ── Pivot tables ──────────────────────────────────────────────────────────
+    # ── Build pivots ──────────────────────────────────────────────────────────
     df_res = pd.DataFrame(results)
     pivot  = df_res.pivot_table(
         index="Month", columns="VAT Category", values="Sales", aggfunc="sum"
@@ -342,84 +278,65 @@ if run and ready:
     latest  = pivot_pct.index[-1]
     row_pct = pivot_pct.loc[latest]
 
-    st.markdown(f'<div class="section-label">Latest month — {latest}</div>', unsafe_allow_html=True)
+    st.subheader(f"Latest month — {latest}")
     c1, c2, c3, c4 = st.columns(4)
-    for col, label, val in [
-        (c1, "Standard VAT (20%)", f"{row_pct.get('20% Standard', 0):.1f}%"),
-        (c2, "Reduced VAT (5%)",   f"{row_pct.get('5% Reduced', 0):.1f}%"),
-        (c3, "Zero Rated (0%)",    f"{row_pct.get('0% Zero Rated', 0):.1f}%"),
-        (c4, "Total Sales",        f"£{pivot_chart.sum(axis=1).iloc[-1]:,.0f}"),
-    ]:
-        with col:
-            st.markdown(
-                f'<div class="md-card">'
-                f'<div class="md-card-label">{label}</div>'
-                f'<div class="md-card-value">{val}</div>'
-                f'</div>',
-                unsafe_allow_html=True,
-            )
+    c1.metric("Standard VAT (20%)", f"{row_pct.get('20% Standard', 0):.1f}%")
+    c2.metric("Reduced VAT (5%)",   f"{row_pct.get('5% Reduced', 0):.1f}%")
+    c3.metric("Zero Rated (0%)",    f"{row_pct.get('0% Zero Rated', 0):.1f}%")
+    c4.metric("Total Sales",        f"£{pivot_chart.sum(axis=1).iloc[-1]:,.0f}")
+
+    st.divider()
 
     # ── Line chart – % share ──────────────────────────────────────────────────
-    st.markdown('<div class="section-label" style="margin-top:28px">% of sales by VAT category</div>', unsafe_allow_html=True)
+    st.subheader("% of Sales by VAT Category")
 
     fig = go.Figure()
-    for i, cat in enumerate(pivot_pct.columns):
-        colour = MONO[i % len(MONO)]
+    for cat in pivot_pct.columns:
         fig.add_trace(go.Scatter(
             x=list(pivot_pct.index),
             y=pivot_pct[cat].round(2),
             mode="lines+markers",
             name=cat,
-            line=dict(color=colour, width=2),
-            marker=dict(size=6, color=colour),
             hovertemplate=f"<b>{cat}</b><br>%{{x}}<br>%{{y:.1f}}%<extra></extra>",
         ))
 
     fig.update_layout(
-        plot_bgcolor="white", paper_bgcolor="white",
-        height=360,
+        height=380,
         margin=dict(l=0, r=0, t=12, b=0),
-        xaxis=dict(showgrid=False, tickangle=-30, linecolor="#e0e0e0",
-                   tickfont=dict(size=12, color="#616161")),
-        yaxis=dict(ticksuffix="%", range=[0, 105], showgrid=True, gridcolor="#f5f5f5",
-                   tickfont=dict(size=12, color="#616161"), zeroline=False),
-        legend=dict(orientation="h", y=-0.22, x=0,
-                    font=dict(size=12, color="#424242"),
-                    bgcolor="white", bordercolor="#e0e0e0", borderwidth=1),
+        xaxis=dict(showgrid=False, tickangle=-30),
+        yaxis=dict(ticksuffix="%", range=[0, 105], showgrid=True),
+        legend=dict(orientation="h", y=-0.25, x=0),
         hovermode="x unified",
-        font=dict(family="Roboto, Segoe UI, sans-serif"),
+        plot_bgcolor="white",
+        paper_bgcolor="white",
     )
     st.plotly_chart(fig, use_container_width=True)
 
     # ── Bar chart – absolute £ ────────────────────────────────────────────────
-    st.markdown('<div class="section-label" style="margin-top:8px">Absolute sales (£) by VAT category</div>', unsafe_allow_html=True)
+    st.subheader("Absolute Sales (£) by VAT Category")
 
     fig2 = go.Figure()
-    for i, cat in enumerate(pivot_chart.columns):
-        colour = MONO[i % len(MONO)]
+    for cat in pivot_chart.columns:
         fig2.add_trace(go.Bar(
             x=list(pivot_chart.index),
             y=pivot_chart[cat].round(2),
             name=cat,
-            marker_color=colour,
             hovertemplate=f"<b>{cat}</b><br>%{{x}}<br>£%{{y:,.0f}}<extra></extra>",
         ))
 
     fig2.update_layout(
         barmode="stack",
-        plot_bgcolor="white", paper_bgcolor="white",
-        height=320,
+        height=340,
         margin=dict(l=0, r=0, t=12, b=0),
-        xaxis=dict(showgrid=False, tickangle=-30, linecolor="#e0e0e0",
-                   tickfont=dict(size=12, color="#616161")),
-        yaxis=dict(tickprefix="£", showgrid=True, gridcolor="#f5f5f5",
-                   tickfont=dict(size=12, color="#616161"), zeroline=False),
-        legend=dict(orientation="h", y=-0.22, x=0,
-                    font=dict(size=12, color="#424242"),
-                    bgcolor="white", bordercolor="#e0e0e0", borderwidth=1),
-        font=dict(family="Roboto, Segoe UI, sans-serif"),
+        xaxis=dict(showgrid=False, tickangle=-30),
+        yaxis=dict(tickprefix="£", showgrid=True),
+        legend=dict(orientation="h", y=-0.25, x=0),
+        plot_bgcolor="white",
+        paper_bgcolor="white",
     )
     st.plotly_chart(fig2, use_container_width=True)
+
+    st.divider()
 
     # ── Tables & download ─────────────────────────────────────────────────────
     with st.expander("View data tables"):
@@ -437,7 +354,7 @@ if run and ready:
 
     # ── Unmatched ASINs ───────────────────────────────────────────────────────
     if unmatched_log:
-        with st.expander(f"{len(unmatched_log)} unmatched ASINs (excluded from charts)"):
+        with st.expander(f"⚠️ {len(unmatched_log)} unmatched ASINs (excluded from charts)"):
             st.caption("These ASINs were in the Amazon report but not found in your sheet.")
             st.dataframe(
                 pd.DataFrame(unmatched_log, columns=["Month", "ASIN"]),
