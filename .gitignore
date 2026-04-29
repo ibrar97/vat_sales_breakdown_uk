@@ -1,0 +1,9 @@
+[cookie]
+name         = "vat_dashboard"
+key          = "71ecadf84fda52774e67d02ef3a5f1ee90ce293ae323a1fe2c749479a8850a20"
+expiry_days  = 7
+
+[users.admin]
+name     = "Admin"
+email    = "amzrdp.250@gmail.com"
+password = "$2b$12$Tni7RadJklp5Lf3EaxB64u.Lr0S6YjjTVJJznYz6S8/CP49HSDJ2a"
