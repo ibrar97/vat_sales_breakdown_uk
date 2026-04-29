@@ -157,9 +157,10 @@ if sheet_id and tab_name:
     if gsheet_df is not None:
         missing = [c for c in [ASIN_COL_SHEET, VAT_COL_SHEET] if c not in gsheet_df.columns]
         if missing:
+            available = "`, `".join(gsheet_df.columns.tolist())
             st.warning(
                 f"Column(s) not found: **{', '.join(missing)}**  \n"
-                f"Columns available: `{'`, `'.join(gsheet_df.columns.tolist())}`"
+                f"Columns available: `{available}`"
             )
         else:
             vat_map = {
@@ -221,9 +222,10 @@ if run and ready:
 
         missing_cols = [c for c in [ASIN_COL_AMAZON, SALES_COL_AMAZON] if c not in df.columns]
         if missing_cols:
+            available_cols = "`, `".join(df.columns.tolist())
             st.warning(
                 f"**{f.name}** — columns not found: `{'`, `'.join(missing_cols)}`  \n"
-                f"Available: `{'`, `'.join(df.columns.tolist())}`"
+                f"Available: `{available_cols}`"
             )
             continue
 
