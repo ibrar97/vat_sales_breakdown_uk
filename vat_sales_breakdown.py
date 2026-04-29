@@ -6,6 +6,7 @@ import requests
 import io
 import re
 import json
+import streamlit_authenticator as stauth
 from datetime import datetime
 
 st.set_page_config(
@@ -14,6 +15,47 @@ st.set_page_config(
     layout="wide",
     initial_sidebar_state="expanded",
 )
+
+# ═════════════════════════════════════════════════════════════════════════════
+# AUTHENTICATION
+# Credentials live in .streamlit/secrets.toml — never commit real passwords.
+# ═════════════════════════════════════════════════════════════════════════════
+def _build_credentials() -> dict:
+    users = st.secrets.get("users", {})
+    creds = {"usernames": {}}
+    for uname, info in users.items():
+        creds["usernames"][uname] = {
+            "name":     info.get("name", uname),
+            "email":    info.get("email", ""),
+            "password": info.get("password", ""),
+        }
+    return creds
+
+try:
+    _credentials = _build_credentials()
+    _authenticator = stauth.Authenticate(
+        _credentials,
+        cookie_name=st.secrets.get("cookie", {}).get("name", "vat_dashboard"),
+        cookie_key=st.secrets.get("cookie", {}).get("key", "change_this_secret_key"),
+        cookie_expiry_days=int(st.secrets.get("cookie", {}).get("expiry_days", 7)),
+        auto_hash=False,
+    )
+    _authenticator.login()
+except Exception as _auth_err:
+    st.error(f"Auth setup error: {_auth_err}")
+    st.info("Check `.streamlit/secrets.toml` — see `secrets.toml.example` for the format.")
+    st.stop()
+
+_auth_status = st.session_state.get("authentication_status")
+if _auth_status is False:
+    st.error("Incorrect username or password.")
+    st.stop()
+if _auth_status is None:
+    st.warning("Enter your username and password to continue.")
+    st.stop()
+
+# All content below is only visible after successful login.
+
 
 # ── Column config ─────────────────────────────────────────────────────────────
 ASIN_COL_SHEET   = "ASIN"
@@ -119,6 +161,9 @@ def sort_months(index):
 # ═════════════════════════════════════════════════════════════════════════════
 with st.sidebar:
     st.title("Settings")
+    _name = st.session_state.get("name", "User")
+    st.caption(f"Logged in as **{_name}**")
+    _authenticator.logout("Logout", "sidebar")
     st.divider()
     st.subheader("Google Sheet")
     st.caption("Share as **Anyone with the link → Viewer** first.")
