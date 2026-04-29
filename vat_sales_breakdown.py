@@ -19,7 +19,6 @@ ASIN_COL_SHEET   = "ASIN"
 VAT_COL_SHEET    = "VAT Code"
 ASIN_COL_AMAZON  = "(Child) ASIN"
 SALES_COL_AMAZON = "Ordered Product Sales"
-SHEET_HEADER_ROW = 2   # 0-indexed → row 3 in the spreadsheet
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -55,7 +54,7 @@ def get_sheet_tabs(sheet_id: str):
 def load_tab_as_df(sheet_id: str, tab_name: str):
     """
     Load a sheet tab via gviz CSV (works with 'Anyone with the link').
-    Reads all rows with no header, then promotes row SHEET_HEADER_ROW (0-indexed) as columns.
+    Dynamically finds the header row by scanning for the ASIN column.
     """
     url = (
         f"https://docs.google.com/spreadsheets/d/{sheet_id}"
@@ -64,16 +63,30 @@ def load_tab_as_df(sheet_id: str, tab_name: str):
     try:
         r = requests.get(url, timeout=20)
         r.raise_for_status()
-        # Read without treating any row as header
-        df = pd.read_csv(io.StringIO(r.text), header=None, dtype=str)
-        # Use SHEET_HEADER_ROW as column names
-        raw_headers = df.iloc[SHEET_HEADER_ROW]
-        df.columns = [str(h).strip() if pd.notna(h) else f"_col_{i}" for i, h in enumerate(raw_headers)]
-        # Data rows start after the header row
-        df = df.iloc[SHEET_HEADER_ROW + 1:].reset_index(drop=True)
-        # Drop fully empty rows/columns
+        # Read all rows as plain strings, no header assumption
+        df_raw = pd.read_csv(io.StringIO(r.text), header=None, dtype=str)
+
+        # Find the row that contains "ASIN" — that's our header row
+        header_idx = None
+        for i, row in df_raw.iterrows():
+            if row.astype(str).str.strip().str.upper().eq("ASIN").any():
+                header_idx = i
+                break
+
+        if header_idx is None:
+            st.error("Could not find a row containing 'ASIN' in the selected tab. Please check the tab selection.")
+            return None
+
+        # Promote that row to column names
+        raw_headers = df_raw.iloc[header_idx]
+        df_raw.columns = [str(h).strip() if pd.notna(h) and str(h).strip() not in ("", "nan") else f"_col_{i}"
+                          for i, h in enumerate(raw_headers)]
+
+        # Data starts from the row after the header
+        df = df_raw.iloc[header_idx + 1:].reset_index(drop=True)
         df = df.dropna(how="all", axis=1).dropna(how="all", axis=0)
         return df
+
     except Exception as e:
         st.error(f"Could not load tab '{tab_name}': {e}")
         return None
