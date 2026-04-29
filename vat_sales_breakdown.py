@@ -130,24 +130,14 @@ with st.sidebar:
     st.subheader("Google Sheet")
     st.caption("Share your sheet as **Anyone with the link → Viewer** before pasting the URL.")
 
-    sheet_url  = st.text_input("Sheet URL", placeholder="https://docs.google.com/spreadsheets/d/…")
-    tab_name   = None
-    sheet_id   = None
-    sheet_tabs = []
+    sheet_url = st.text_input("Sheet URL", placeholder="https://docs.google.com/spreadsheets/d/…")
+    tab_name  = "🧲 Profit Calculator - VAT 20%"   # hardcoded — same for all users
+    sheet_id  = None
 
     if sheet_url:
         sheet_id = extract_sheet_id(sheet_url)
         if not sheet_id:
             st.error("Could not find a Sheet ID in that URL.")
-        else:
-            with st.spinner("Fetching tabs…"):
-                sheet_tabs = get_sheet_tabs(sheet_id)
-
-            if sheet_tabs:
-                tab_name = st.selectbox("Select tab", options=sheet_tabs)
-            else:
-                st.caption("Could not fetch tabs automatically. Type the tab name manually.")
-                tab_name = st.text_input("Tab name", placeholder="e.g. Profit Calculator - VAT 20%")
 
     st.divider()
     st.caption("Amazon UK · VAT sales trend tracker")
@@ -290,21 +280,34 @@ if run and ready:
     pivot_chart = pivot[chart_cats]
     pivot_pct   = pivot_chart.div(pivot_chart.sum(axis=1), axis=0) * 100
 
-    # ── Metric cards ──────────────────────────────────────────────────────────
+    # ── Metric cards with month-on-month delta ────────────────────────────────
     latest  = pivot_pct.index[-1]
-    row_pct = pivot_pct.loc[latest]
+    prev    = pivot_pct.index[-2] if len(pivot_pct) >= 2 else None
+    row_latest = pivot_pct.loc[latest]
+    row_prev   = pivot_pct.loc[prev] if prev else None
+
+    def delta_str(cat):
+        if row_prev is None:
+            return None
+        d = row_latest.get(cat, 0) - row_prev.get(cat, 0)
+        return f"{d:+.1f} pp"   # pp = percentage points
 
     st.subheader(f"Latest month — {latest}")
+    if prev:
+        st.caption(f"Δ vs previous month ({prev})")
+
     c1, c2, c3, c4 = st.columns(4)
-    c1.metric("Standard VAT (20%)", f"{row_pct.get('20% Standard', 0):.1f}%")
-    c2.metric("Reduced VAT (5%)",   f"{row_pct.get('5% Reduced', 0):.1f}%")
-    c3.metric("Zero Rated (0%)",    f"{row_pct.get('0% Zero Rated', 0):.1f}%")
-    c4.metric("Total Sales",        f"£{pivot_chart.sum(axis=1).iloc[-1]:,.0f}")
+    c1.metric("Standard VAT (20%)", f"{row_latest.get('20% Standard', 0):.1f}%",  delta=delta_str("20% Standard"))
+    c2.metric("Reduced VAT (5%)",   f"{row_latest.get('5% Reduced', 0):.1f}%",    delta=delta_str("5% Reduced"))
+    c3.metric("Zero Rated (0%)",    f"{row_latest.get('0% Zero Rated', 0):.1f}%", delta=delta_str("0% Zero Rated"))
+    c4.metric("Total Sales",        f"£{pivot_chart.sum(axis=1).iloc[-1]:,.0f}",
+              delta=f"£{pivot_chart.sum(axis=1).iloc[-1] - pivot_chart.sum(axis=1).iloc[-2]:+,.0f}" if len(pivot_chart) >= 2 else None)
 
     st.divider()
 
-    # ── Line chart – % share ──────────────────────────────────────────────────
-    st.subheader("% of Sales by VAT Category")
+    # ── Chart 1: % share trend ────────────────────────────────────────────────
+    st.subheader("% Share of Sales by VAT Category")
+    st.caption("How much of your total monthly sales comes from each VAT category.")
 
     fig = go.Figure()
     for cat in pivot_pct.columns:
@@ -328,7 +331,41 @@ if run and ready:
     )
     st.plotly_chart(fig, use_container_width=True)
 
-    # ── Bar chart – absolute £ ────────────────────────────────────────────────
+    # ── Chart 2: Month-on-month delta (pp change) ─────────────────────────────
+    if len(pivot_pct) >= 2:
+        st.subheader("Month-on-Month Change (percentage points)")
+        st.caption("Green = share increased vs prior month · Red = share decreased. Each bar shows how many pp a category moved.")
+
+        delta_df = pivot_pct.diff().dropna()   # row-by-row difference
+
+        fig_delta = go.Figure()
+        for cat in delta_df.columns:
+            vals   = delta_df[cat].round(2).tolist()
+            colors = ["#2ecc71" if v >= 0 else "#e74c3c" for v in vals]
+            fig_delta.add_trace(go.Bar(
+                x=list(delta_df.index),
+                y=vals,
+                name=cat,
+                marker_color=colors,
+                showlegend=True,
+                hovertemplate=f"<b>{cat}</b><br>%{{x}}<br>%{{y:+.1f}} pp<extra></extra>",
+            ))
+
+        fig_delta.add_hline(y=0, line_width=1, line_color="grey")
+        fig_delta.update_layout(
+            barmode="group",
+            height=360,
+            margin=dict(l=0, r=0, t=12, b=0),
+            xaxis=dict(showgrid=False, tickangle=-30),
+            yaxis=dict(ticksuffix=" pp", showgrid=True, zeroline=False),
+            legend=dict(orientation="h", y=-0.25, x=0),
+            hovermode="x unified",
+            plot_bgcolor="white",
+            paper_bgcolor="white",
+        )
+        st.plotly_chart(fig_delta, use_container_width=True)
+
+    # ── Chart 3: Absolute £ stacked bar ──────────────────────────────────────
     st.subheader("Absolute Sales (£) by VAT Category")
 
     fig2 = go.Figure()
@@ -354,8 +391,28 @@ if run and ready:
 
     st.divider()
 
+    # ── Month-by-month summary table ──────────────────────────────────────────
+    st.subheader("Month-by-Month Summary")
+
+    summary_rows = []
+    for i, month in enumerate(pivot_pct.index):
+        row = {"Month": month}
+        for cat in pivot_pct.columns:
+            pct_val = pivot_pct.loc[month, cat]
+            row[f"{cat} (%)"] = f"{pct_val:.1f}%"
+            if i > 0:
+                prev_m = pivot_pct.index[i - 1]
+                delta_val = pct_val - pivot_pct.loc[prev_m, cat]
+                arrow = "▲" if delta_val > 0 else ("▼" if delta_val < 0 else "–")
+                row[f"{cat} Δ"] = f"{arrow} {abs(delta_val):.1f} pp"
+            else:
+                row[f"{cat} Δ"] = "–"
+        summary_rows.append(row)
+
+    st.dataframe(pd.DataFrame(summary_rows).set_index("Month"), use_container_width=True)
+
     # ── Tables & download ─────────────────────────────────────────────────────
-    with st.expander("View data tables"):
+    with st.expander("View raw data tables"):
         st.markdown("**% of sales**")
         st.dataframe(pivot_pct.style.format("{:.1f}%"), use_container_width=True)
         st.markdown("**Absolute sales (£)**")
