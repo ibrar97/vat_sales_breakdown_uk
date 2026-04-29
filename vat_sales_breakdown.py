@@ -552,33 +552,163 @@ if uploaded_files and vat_map:
 
         st.dataframe(styled, use_container_width=True, height=500)
 
-        # ── Per-ASIN trend sparkline (optional deep-dive) ─────────────────────
+        # ── Deep-Dive: Trend Analysis ─────────────────────────────────────────
         if len(available_months) >= 2:
-            st.subheader("Deep-Dive: Individual ASIN Trend")
-            st.caption("Select an ASIN to see its month-by-month sales trend.")
+            st.divider()
+            st.subheader("Trend Analysis")
+            st.caption("Analyse trends for individual ASINs or for an entire VAT category group.")
 
-            asin_options = sku_pivot["ASIN"].tolist()
-            chosen_asin  = st.selectbox("Select ASIN", options=asin_options, key="asin_dd")
-
-            asin_row = sku_pivot[sku_pivot["ASIN"] == chosen_asin].iloc[0]
-            asin_sales = [asin_row.get(m, 0) for m in available_months]
-
-            fig_spark = go.Figure(go.Scatter(
-                x=available_months, y=asin_sales,
-                mode="lines+markers",
-                line=dict(width=2),
-                marker=dict(size=8),
-                fill="tozeroy",
-                hovertemplate="£%{y:,.2f}<extra></extra>",
-            ))
-            fig_spark.update_layout(
-                height=280, margin=dict(l=0, r=0, t=12, b=0),
-                xaxis=dict(showgrid=False, tickangle=-30),
-                yaxis=dict(tickprefix="£", showgrid=True),
-                plot_bgcolor="white", paper_bgcolor="white",
-                title=f"{chosen_asin}  —  {asin_row.get('Title', '')[:60]}",
+            mode = st.radio(
+                "View by",
+                options=["Individual ASINs", "VAT Category Group"],
+                horizontal=True,
+                key="trend_mode",
             )
-            st.plotly_chart(fig_spark, use_container_width=True)
+
+            if mode == "Individual ASINs":
+                # Build "ASIN — Title" labels for the dropdown
+                asin_label_map = {
+                    row["ASIN"]: f"{row['ASIN']}  —  {str(row['Title'])[:50]}" if str(row["Title"]).strip() not in ("", "nan") else row["ASIN"]
+                    for _, row in sku_pivot.iterrows()
+                }
+                label_to_asin = {v: k for k, v in asin_label_map.items()}
+                all_labels    = list(asin_label_map.values())
+
+                chosen_labels = st.multiselect(
+                    "Select ASIN(s)",
+                    options=all_labels,
+                    default=all_labels[:1],
+                    key="asin_dd",
+                    help="Search by ASIN or product name. Select one or more to compare.",
+                )
+
+                if not chosen_labels:
+                    st.info("Select at least one ASIN above.")
+                else:
+                    chosen_asins = [label_to_asin[l] for l in chosen_labels]
+                    selected_rows = sku_pivot[sku_pivot["ASIN"].isin(chosen_asins)]
+
+                    fig_dd = go.Figure()
+                    for _, row in selected_rows.iterrows():
+                        label  = asin_label_map[row["ASIN"]]
+                        sales  = [row.get(m, 0) for m in available_months]
+                        fig_dd.add_trace(go.Scatter(
+                            x=available_months, y=sales,
+                            mode="lines+markers", name=label,
+                            hovertemplate=f"<b>{label}</b><br>%{{x}}<br>£%{{y:,.2f}}<extra></extra>",
+                        ))
+
+                    fig_dd.update_layout(
+                        height=360, margin=dict(l=0, r=0, t=12, b=0),
+                        xaxis=dict(showgrid=False, tickangle=-30),
+                        yaxis=dict(tickprefix="£", showgrid=True),
+                        legend=dict(orientation="h", y=-0.28, x=0),
+                        hovermode="x unified",
+                        plot_bgcolor="white", paper_bgcolor="white",
+                    )
+                    st.plotly_chart(fig_dd, use_container_width=True)
+
+                    # Mini delta table for selected ASINs
+                    if len(available_months) >= 2:
+                        last_m = available_months[-1]
+                        prev_m = available_months[-2]
+                        delta_rows = []
+                        for _, row in selected_rows.iterrows():
+                            last_val = row.get(last_m, 0)
+                            prev_val = row.get(prev_m, 0)
+                            change   = last_val - prev_val
+                            pct      = (change / prev_val * 100) if prev_val else None
+                            delta_rows.append({
+                                "ASIN":           row["ASIN"],
+                                "Title":          str(row["Title"])[:50],
+                                "VAT Category":   row["VAT Category"],
+                                f"{prev_m} (£)":  f"£{prev_val:,.2f}",
+                                f"{last_m} (£)":  f"£{last_val:,.2f}",
+                                "Change (£)":     f"{'▲' if change >= 0 else '▼'} £{abs(change):,.2f}",
+                                "Change (%)":     f"{pct:+.1f}%" if pct is not None else "—",
+                            })
+                        st.dataframe(pd.DataFrame(delta_rows), use_container_width=True, hide_index=True)
+
+            else:  # VAT Category Group
+                vat_options   = sorted(df_sku["VAT Category"].unique())
+                chosen_groups = st.multiselect(
+                    "Select VAT Category Group(s)",
+                    options=vat_options,
+                    default=vat_options,
+                    key="vat_group_dd",
+                )
+
+                if not chosen_groups:
+                    st.info("Select at least one VAT category above.")
+                else:
+                    # Aggregate total sales per group per month
+                    group_data = (
+                        df_sku[df_sku["VAT Category"].isin(chosen_groups)]
+                        .groupby(["VAT Category", "Month"])["Sales"]
+                        .sum()
+                        .reset_index()
+                    )
+                    group_pivot = group_data.pivot_table(
+                        index="VAT Category", columns="Month", values="Sales", aggfunc="sum"
+                    ).fillna(0)
+                    group_pivot = group_pivot[[m for m in available_months if m in group_pivot.columns]]
+
+                    # Line chart — absolute £ per group
+                    fig_grp = go.Figure()
+                    for grp in group_pivot.index:
+                        fig_grp.add_trace(go.Scatter(
+                            x=list(group_pivot.columns),
+                            y=group_pivot.loc[grp].round(2).tolist(),
+                            mode="lines+markers", name=grp,
+                            hovertemplate=f"<b>{grp}</b><br>%{{x}}<br>£%{{y:,.0f}}<extra></extra>",
+                        ))
+
+                    fig_grp.update_layout(
+                        height=360, margin=dict(l=0, r=0, t=12, b=0),
+                        xaxis=dict(showgrid=False, tickangle=-30),
+                        yaxis=dict(tickprefix="£", showgrid=True),
+                        legend=dict(orientation="h", y=-0.25, x=0),
+                        hovermode="x unified",
+                        plot_bgcolor="white", paper_bgcolor="white",
+                        title="Total Sales (£) per VAT Category Group",
+                    )
+                    st.plotly_chart(fig_grp, use_container_width=True)
+
+                    # MoM delta table for groups
+                    if len(available_months) >= 2:
+                        last_m = available_months[-1]
+                        prev_m = available_months[-2]
+                        st.markdown(f"**Month-on-Month: {prev_m} → {last_m}**")
+                        grp_delta_rows = []
+                        for grp in group_pivot.index:
+                            last_val = group_pivot.loc[grp, last_m] if last_m in group_pivot.columns else 0
+                            prev_val = group_pivot.loc[grp, prev_m] if prev_m in group_pivot.columns else 0
+                            change   = last_val - prev_val
+                            pct      = (change / prev_val * 100) if prev_val else None
+                            sku_count = df_sku[(df_sku["VAT Category"] == grp) & (df_sku["Month"] == last_m)]["ASIN"].nunique()
+                            grp_delta_rows.append({
+                                "VAT Category":      grp,
+                                "ASINs in group":    sku_count,
+                                f"{prev_m} (£)":     f"£{prev_val:,.0f}",
+                                f"{last_m} (£)":     f"£{last_val:,.0f}",
+                                "Change (£)":        f"{'▲' if change >= 0 else '▼'} £{abs(change):,.0f}",
+                                "Change (%)":        f"{pct:+.1f}%" if pct is not None else "—",
+                            })
+                        st.dataframe(pd.DataFrame(grp_delta_rows), use_container_width=True, hide_index=True)
+
+                    # How many ASINs contribute to each group this month?
+                    st.markdown("**ASIN count per group per month**")
+                    count_pivot = (
+                        df_sku[df_sku["VAT Category"].isin(chosen_groups)]
+                        .groupby(["VAT Category", "Month"])["ASIN"]
+                        .nunique()
+                        .reset_index()
+                        .pivot_table(index="VAT Category", columns="Month", values="ASIN", aggfunc="sum")
+                        .fillna(0)
+                        .astype(int)
+                    )
+                    count_pivot = count_pivot[[m for m in available_months if m in count_pivot.columns]]
+                    st.dataframe(count_pivot, use_container_width=True)
 
         # Download
         st.download_button(
