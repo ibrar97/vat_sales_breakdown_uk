@@ -300,8 +300,15 @@ if run and ready:
     c1.metric("Standard VAT (20%)", f"{row_latest.get('20% Standard', 0):.1f}%",  delta=delta_str("20% Standard"))
     c2.metric("Reduced VAT (5%)",   f"{row_latest.get('5% Reduced', 0):.1f}%",    delta=delta_str("5% Reduced"))
     c3.metric("Zero Rated (0%)",    f"{row_latest.get('0% Zero Rated', 0):.1f}%", delta=delta_str("0% Zero Rated"))
-    c4.metric("Total Sales",        f"£{pivot_chart.sum(axis=1).iloc[-1]:,.0f}",
-              delta=f"£{pivot_chart.sum(axis=1).iloc[-1] - pivot_chart.sum(axis=1).iloc[-2]:+,.0f}" if len(pivot_chart) >= 2 else None)
+
+    total_latest = pivot_chart.sum(axis=1).iloc[-1]
+    if len(pivot_chart) >= 2:
+        total_diff = total_latest - pivot_chart.sum(axis=1).iloc[-2]
+        sign = "+" if total_diff >= 0 else "-"
+        total_delta = f"{sign}£{abs(total_diff):,.0f}"
+    else:
+        total_delta = None
+    c4.metric("Total Sales", f"£{total_latest:,.0f}", delta=total_delta)
 
     st.divider()
 
