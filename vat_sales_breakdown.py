@@ -545,7 +545,10 @@ if uploaded_files and vat_map:
             {c: "£{:,.2f}" for c in money_cols}
         )
         if "MoM Change (£)" in display_df.columns:
-            styled = styled.applymap(colour_delta, subset=["MoM Change (£)", "MoM Change (%)"])
+            try:
+                styled = styled.map(colour_delta, subset=["MoM Change (£)", "MoM Change (%)"])
+            except AttributeError:
+                styled = styled.applymap(colour_delta, subset=["MoM Change (£)", "MoM Change (%)"])
 
         st.dataframe(styled, use_container_width=True, height=500)
 
