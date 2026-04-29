@@ -67,7 +67,8 @@ def load_tab_as_df(sheet_id: str, tab_name: str):
         # Read without treating any row as header
         df = pd.read_csv(io.StringIO(r.text), header=None, dtype=str)
         # Use SHEET_HEADER_ROW as column names
-        df.columns = df.iloc[SHEET_HEADER_ROW].str.strip()
+        raw_headers = df.iloc[SHEET_HEADER_ROW]
+        df.columns = [str(h).strip() if pd.notna(h) else f"_col_{i}" for i, h in enumerate(raw_headers)]
         # Data rows start after the header row
         df = df.iloc[SHEET_HEADER_ROW + 1:].reset_index(drop=True)
         # Drop fully empty rows/columns
@@ -157,7 +158,7 @@ if sheet_id and tab_name:
     if gsheet_df is not None:
         missing = [c for c in [ASIN_COL_SHEET, VAT_COL_SHEET] if c not in gsheet_df.columns]
         if missing:
-            available = "`, `".join(gsheet_df.columns.tolist())
+            available = "`, `".join(str(c) for c in gsheet_df.columns.tolist())
             st.warning(
                 f"Column(s) not found: **{', '.join(missing)}**  \n"
                 f"Columns available: `{available}`"
